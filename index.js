@@ -2,7 +2,7 @@ const { program } = require('commander');
 const http = require('http');
 const fs = require('fs/promises');
 const path = require('path');
-// superagent підключимо в наступній частині
+const superagent = require('superagent'); // Підключаємо superagent 
 
 program
   .requiredOption('-h, --host <host>', 'Server address')
@@ -20,12 +20,10 @@ async function ensureCacheDir() {
   }
 }
 
-// Допоміжна функція для отримання шляху
 const getFilePath = (code) => path.join(options.cache, `${code}.jpg`);
 
 const requestListener = async (req, res) => {
-  // Отримуємо код з URL, наприклад /200 -> 200 [cite: 696]
-  const code = req.url.slice(1);
+  const code = req.url.slice(1); // Отримуємо код, наприклад "200"
   const filePath = getFilePath(code);
 
   if (!code) {
@@ -36,33 +34,49 @@ const requestListener = async (req, res) => {
 
   try {
     if (req.method === 'GET') {
-      // Читання з кешу [cite: 698]
       try {
+        // 1. Спочатку пробуємо знайти картинку в кеші (Частина 2) [cite: 48]
         const image = await fs.readFile(filePath);
-        res.writeHead(200, { 'Content-Type': 'image/jpeg' }); // [cite: 704]
+        res.writeHead(200, { 'Content-Type': 'image/jpeg' });
         res.end(image);
       } catch (err) {
-        // Якщо файлу немає - 404 (в цій частині ще не йдемо на http.cat) [cite: 701]
-        res.writeHead(404);
-        res.end('Not Found in cache');
+        // 2. Якщо в кеші немає (помилка читання файлу), йдемо на http.cat (Частина 3)
+        // Інструкція: "Додайте перевірку, яка буде надсилати запит... у випадку, коли кеш не має такої картинки" [cite: 59]
+        
+        try {
+          // Робимо запит до зовнішнього API 
+          // Інструкція: "передайте статусний код НТТР у шляху URL" [cite: 62]
+          const response = await superagent.get(`https://http.cat/${code}`);
+          
+          const imageBuffer = response.body; // Отримуємо картинку як буфер
+
+          // Інструкція: "збережіть картинку у кеш, так щоб наступного разу проксі-сервер брав картинку з кешу" [cite: 64]
+          await fs.writeFile(filePath, imageBuffer);
+
+          // Віддаємо картинку клієнту
+          res.writeHead(200, { 'Content-Type': 'image/jpeg' });
+          res.end(imageBuffer);
+        } catch (superagentError) {
+          // Інструкція: "Якщо запит завершився помилкою... повернути відповідь з кодом 404" [cite: 63]
+          res.writeHead(404);
+          res.end('Not Found on http.cat');
+        }
       }
     } 
     else if (req.method === 'PUT') {
-      // Запис у кеш [cite: 699]
       const chunks = [];
       req.on('data', chunk => chunks.push(chunk));
       req.on('end', async () => {
         const buffer = Buffer.concat(chunks);
         await fs.writeFile(filePath, buffer);
-        res.writeHead(201); // [cite: 703]
+        res.writeHead(201);
         res.end('Created');
       });
     } 
     else if (req.method === 'DELETE') {
-      // Видалення з кешу [cite: 700]
       try {
         await fs.unlink(filePath);
-        res.writeHead(200); // [cite: 703]
+        res.writeHead(200);
         res.end('Deleted');
       } catch (err) {
         res.writeHead(404);
@@ -70,7 +84,6 @@ const requestListener = async (req, res) => {
       }
     } 
     else {
-      // Метод не підтримується [cite: 700]
       res.writeHead(405);
       res.end('Method Not Allowed');
     }
